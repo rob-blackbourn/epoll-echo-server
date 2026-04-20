@@ -1,0 +1,42 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "client (ssl)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/project/client",
+            "args": [
+                "--host", "slate.jetblack.net",
+                "--port", "8091",
+                "--ssl"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "internalConsoleOptions": "openOnSessionStart"
+        },
+        {
+            "name": "echo-server (ssl)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/project/echo-server",
+            "args": [
+                "--port", "8091",
+                "--ssl",
+                "--certfile", "${env:HOME}/.keys/server.crt",
+                "--keyfile", "${env:HOME}/.keys/server.key"                
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        }
+    ]
+}

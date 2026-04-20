@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "MacOS",
+            "includePath": [
+                "/opt/homebrew/include",
+                "${workspaceFolder}/external",
+                "${workspaceFolder}/project"
+            ],
+            "cppStandard": "c++23",
+            "intelliSenseMode": "macos-clang-x86",
+            "compilerPath": "/usr/bin/clang",
+            "compilerArgs": ["-DNULL=0"],
+            "cStandard": "c23"
+        }
+    ],
+    "version": 4
+}
