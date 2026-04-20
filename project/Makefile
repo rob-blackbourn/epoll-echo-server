@@ -1,7 +1,7 @@
-CXX = clang++
-# CXX = g++
-CXXFLAGS = -g -std=c++23 -Wall -I. -I../external -I/opt/homebrew/include
-LDLIBS = -L/opt/homebrew/lib -lspdlog -lfmt -lssl -lcrypto
+# CXX = clang++
+CXX = g++
+CXXFLAGS = -g -std=c++23 -Wall -I. -I../external
+LDLIBS = -lssl -lcrypto
 
 COMMON_HPP = \
 	io/file.hpp \

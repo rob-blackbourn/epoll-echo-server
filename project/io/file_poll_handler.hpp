@@ -91,7 +91,7 @@ namespace jetblack::io
       return stream_.file->is_open();
     }
 
-    bool write() noexcept override
+    bool write() override
     {
       try
       {

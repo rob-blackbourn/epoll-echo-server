@@ -1,15 +1,14 @@
 {
     "configurations": [
         {
-            "name": "MacOS",
+            "name": "Linux",
             "includePath": [
-                "/opt/homebrew/include",
                 "${workspaceFolder}/external",
                 "${workspaceFolder}/project"
             ],
             "cppStandard": "c++23",
-            "intelliSenseMode": "macos-clang-x86",
-            "compilerPath": "/usr/bin/clang",
+            "intelliSenseMode": "linux-gcc-x86",
+            "compilerPath": "/usr/bin/gcc",
             "compilerArgs": ["-DNULL=0"],
             "cStandard": "c23"
         }
