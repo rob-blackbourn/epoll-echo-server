@@ -64,4 +64,6 @@ clean:
 	rm -f chat-server.o chat-server
 	rm -f echo-server.o echo-server
 	rm -f client.o client
+	rm -f server.o server
+	rm -f server2.o server2
 	
