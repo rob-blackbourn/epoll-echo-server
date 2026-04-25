@@ -1,5 +1,7 @@
 {
     "cSpell.words": [
+        "EPOLLIN",
+        "EPOLLOUT",
         "JETBLACK",
         "tlsext"
     ]
