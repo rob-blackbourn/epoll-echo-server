@@ -1,32 +1,417 @@
 #include <fcntl.h>
 #include <netdb.h>
-#include <sys/event.h>
-#include <sys/types.h>
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
-#include <iostream>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <deque>
+#include <expected>
+#include <iostream>
 #include <map>
+#include <system_error>
 #include <vector>
 
-typedef struct kevent kevent_t;
-
-struct Client
+struct Buffer
 {
-    char buf[100];
+    char data[100];
     std::size_t len { 0 };
     std::size_t offset { 0 };
 };
+
+struct Client
+{
+    std::deque<Buffer> buffers;
+    bool can_write { false };
+};
+
+enum class ListenState
+{
+    OK,
+    WOULD_BLOCK,
+    ERROR
+};
+
+std::expected<int, std::error_code> _accept(int listen_fd, sockaddr* addr, socklen_t* addr_len)
+{
+    int client_fd = accept(listen_fd, addr, addr_len);
+    if (client_fd == -1)
+    {
+        return std::unexpected(std::make_error_code(std::errc(errno)));
+    }
+    return client_fd;
+}
+
+ListenState accept_client(int efd, int listen_fd, std::map<int, Client>& clients)
+{
+    // Accept the new connection.
+    auto client_fd = _accept(listen_fd, (sockaddr *)nullptr, nullptr);
+    if (!client_fd)
+    {
+        if (client_fd.error() == std::errc::operation_would_block)
+        {
+            std::cerr << "Accept would block\n";
+            return ListenState::WOULD_BLOCK;
+        }
+
+        std::cerr
+            << "failed to accept client socket: "
+            << std::strerror(errno)
+            << std::endl;
+        
+            return ListenState::ERROR;
+    }
+
+    // Make the connection non-blocking.
+    if (fcntl(*client_fd, F_SETFL, O_NONBLOCK) == -1)
+    {
+        std::cerr
+            << "failed to make client socket non-blocking: "
+            << std::strerror(errno)
+            << std::endl;
+        return ListenState::ERROR;
+    }
+
+    // Add events for reads or writes with edge trigger.
+    epoll_event client_ev;
+    client_ev.events = EPOLLIN | EPOLLOUT | EPOLLPRI | EPOLLERR | EPOLLHUP | EPOLLET;
+    client_ev.data.fd = *client_fd;
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, *client_fd, &client_ev) == -1)
+    {
+        std::cerr
+            << "failed to make client events: "
+            << std::strerror(errno)
+            << std::endl;
+        return ListenState::ERROR;
+    }
+
+    // Create the client.
+    clients[*client_fd] = Client {};
+
+    // Keep listening.
+    return ListenState::OK;
+}
+
+bool accept_clients(int efd, int listen_fd, std::map<int, Client>& clients)
+{
+    bool is_ok = true;
+    bool keep_trying = true;
+    
+    while (keep_trying)
+    {
+        switch (accept_client(efd, listen_fd, clients))
+        {
+        case ListenState::OK:
+            break;
+
+        case ListenState::WOULD_BLOCK:
+            keep_trying = false;
+            break;
+
+        case ListenState::ERROR:
+            is_ok = false;
+            keep_trying = false;
+            break;
+        }
+    }
+
+    return is_ok;
+}
+
+enum class SignalState
+{
+    OK,
+    WOULD_BLOCK,
+    QUIT,
+    ERROR
+};
+
+SignalState read_signal(int signal_fd)
+{
+    signalfd_siginfo fdsi;
+    auto nbytes_read = read(signal_fd, &fdsi, sizeof(fdsi));
+    if (nbytes_read == -1)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return SignalState::WOULD_BLOCK;
+        }
+        else
+        {
+            std::cerr << "Error reading signal\n";
+            return SignalState::ERROR;
+        }
+    }
+
+    if (nbytes_read != sizeof(fdsi))
+    {
+        std::cerr << "Failed to read entire signal\n";
+        return SignalState::ERROR;
+    }
+
+    if (fdsi.ssi_signo == SIGINT)
+    {
+        std::cout << "SIGINT\n";
+    } else if (fdsi.ssi_signo == SIGQUIT) {
+        std::cout << "SIGQUIT\n";
+        return SignalState::QUIT;
+    } else
+    {
+        std::cout << "Unexpected signal\n";
+        return SignalState::ERROR;
+    }
+
+    return SignalState::OK;
+}
+
+bool read_signals(int efd, int signal_fd)
+{
+    bool is_ok = true;
+    bool keep_trying = true;
+
+    while (keep_trying)
+    {
+        switch (read_signal(signal_fd))
+        {
+        case SignalState::OK:
+            break;
+
+        case SignalState::WOULD_BLOCK:
+            keep_trying = false;
+            break;
+
+        case SignalState::QUIT:
+            close(signal_fd);
+            epoll_ctl(efd, EPOLL_CTL_DEL, signal_fd, nullptr);
+            is_ok = false;
+            keep_trying = false;
+            break;
+
+        case SignalState::ERROR:
+            is_ok = false;
+            keep_trying = false;
+            break;
+        }
+    }
+
+    return is_ok;
+}
+
+enum class ReadState
+{
+    OK,
+    WOULD_BLOCK,
+    END_OF_FILE,
+    ERROR
+};
+
+ReadState client_read(int client_fd, Client& client)
+{
+    // Read from the client socket.
+    Buffer buffer;
+    memset(buffer.data, 0, sizeof(buffer.data));
+    auto nbytes_read = read(client_fd, buffer.data, sizeof(buffer.data));
+    std::cout << "Received " << buffer.len << " bytes from " << client_fd << " of \"" << buffer.data << "\"" << std::endl;
+
+    if (nbytes_read == 0)
+    {
+        return ReadState::END_OF_FILE;
+    }
+
+    if (nbytes_read == -1)
+    {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return ReadState::WOULD_BLOCK;
+        }
+        else
+        {
+            return ReadState::ERROR;
+        }
+    }
+
+    buffer.len = nbytes_read;
+    buffer.offset = 0;
+    client.buffers.push_front(buffer);
+
+    return ReadState::OK;
+}
+
+bool client_reads(int efd, int client_fd, Client& client)
+{
+    bool is_ok = true;
+    bool keep_trying = true;
+
+    while (keep_trying)
+    {
+        switch (client_read(client_fd, client))
+        {
+        case ReadState::OK:
+            break;
+
+        case ReadState::WOULD_BLOCK:
+            keep_trying = false;
+            break;
+
+        case ReadState::END_OF_FILE:
+        case ReadState::ERROR:
+            epoll_ctl(efd, EPOLL_CTL_DEL, client_fd, nullptr);
+            close(client_fd);
+            is_ok = false;
+            keep_trying = false;
+            break;
+        }
+    }
+
+    return is_ok;
+}
+
+enum class WriteState
+{
+    OK,
+    NOTHING_TO_WRITE,
+    WOULD_BLOCK,
+    ERROR
+};
+
+WriteState client_write(int client_fd, Client& client)
+{
+    if (client.buffers.empty())
+    {
+        // Nothing to write.
+        std::cerr << "Nothing to write\n";
+        return WriteState::NOTHING_TO_WRITE;
+    }
+
+    // Write the data back.
+    auto& buffer = client.buffers.back();
+    std::cout << "Echoing back - " << (buffer.data + buffer.offset) << std::endl;
+    std::cout << "Writing " << buffer.len << std::endl;
+    ssize_t nbytes_written = write(client_fd, buffer.data + buffer.offset, buffer.len - buffer.offset);
+    std::cout << "Wrote " << nbytes_written << " bytes" << std::endl;
+
+    if (nbytes_written <= 0)
+    {
+        if (errno == EWOULDBLOCK || errno == EAGAIN)
+        {
+            return WriteState::WOULD_BLOCK;
+        }
+        else
+        {
+            return WriteState::ERROR;
+        }
+    }
+
+    buffer.offset += nbytes_written;
+    if (buffer.offset == buffer.len)
+    {
+        client.buffers.pop_back();
+    }
+
+    return WriteState::OK;
+}
+
+bool client_writes(int efd, int client_fd, Client& client)
+{
+    bool is_ok = true;
+    bool keep_trying = true;
+
+    while (keep_trying)
+    {
+        switch (client_write(client_fd, client))
+        {
+        case WriteState::OK:
+            break;
+
+        case WriteState::NOTHING_TO_WRITE:
+            keep_trying = false;
+            break;
+
+        case WriteState::WOULD_BLOCK:
+            keep_trying = false;
+            break;
+
+        case WriteState::ERROR:
+            epoll_ctl(efd, EPOLL_CTL_DEL, client_fd, nullptr);
+            close(client_fd);
+            is_ok = false;
+            keep_trying = false;
+            break;
+        }
+    }
+
+    return is_ok;
+}
+
+bool read_write_client(int efd, epoll_event& event, std::map<int, Client>& clients)
+{
+    auto& client = clients[event.data.fd];
+
+    if ((event.events & EPOLLIN) == EPOLLIN)
+    {
+        auto is_open = client_reads(efd, event.data.fd, client);
+        if (!is_open)
+        {
+            std::cout << "Removing client " << event.data.fd << std::endl;
+            clients.erase(event.data.fd);
+            // We can't write, so return.
+            return false;
+        }
+    }
+
+    if (((event.events & EPOLLOUT) == EPOLLOUT) | client.can_write)
+    {
+        auto is_open = client_writes(efd, event.data.fd, client);
+        if (!is_open)
+        {
+            std::cout << "Removing client " << event.data.fd << std::endl;
+            clients.erase(event.data.fd);
+        }
+    }
+
+    return true;
+}
+
+bool handle_event(int efd, int listen_fd, int signal_fd, epoll_event& event, std::map<int, Client>& clients)
+{
+    if (event.data.fd == listen_fd)
+    {
+        // Return, as the listen fd can only accept.
+        return accept_clients(efd, listen_fd, clients);
+    }
+
+    if (event.data.fd == signal_fd)
+    {
+        // Return, as the signal fd can only be read.
+        return read_signals(efd, signal_fd);
+    }
+
+    if ((event.events & (EPOLLIN | EPOLLOUT)) != 0)
+    {
+        read_write_client(efd, event, clients);
+    }
+
+    return true;
+}
 
 int main()
 {
     const uint16_t port = 22000;
 
     // Create the queue.
-    auto kfd = kqueue();
+    auto efd = epoll_create1(0);
+    if (efd == -1)
+    {
+        std::cerr
+            << "failed to create epoll: "
+            << std::strerror(errno)
+            << std::endl;
+        return 1;
+    }
 
     // Create the listener socket.
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -77,9 +462,10 @@ int main()
         return 1;
     }
 
-    kevent_t listen_ev;
-    EV_SET(&listen_ev, listen_fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (kevent(kfd, &listen_ev, 1, nullptr, 0, nullptr) == -1)
+    epoll_event listen_ev;
+    listen_ev.events = EPOLLIN;
+    listen_ev.data.fd = listen_fd;
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, listen_fd, &listen_ev) == -1)
     {
         std::cerr
             << "failed to make listen events: "
@@ -101,10 +487,20 @@ int main()
         return 1;
     }
 
-    kevent_t signal_ev[2];
-    EV_SET(&signal_ev[0], SIGINT, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    EV_SET(&signal_ev[1], SIGQUIT, EVFILT_SIGNAL, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (kevent(kfd, signal_ev, 2, nullptr, 0, nullptr) == -1)
+    auto signal_fd = signalfd(-1, &signals, SFD_NONBLOCK);
+    if (signal_fd == -1)
+    {
+        std::cerr
+            << "failed to create listener socket: "
+            << std::strerror(errno)
+            << std::endl;
+        return 1;
+    }
+
+    epoll_event signal_ev;
+    signal_ev.events = EPOLLIN;
+    signal_ev.data.fd = signal_fd;
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, signal_fd, &signal_ev) == -1)
     {
         std::cerr
             << "failed to make signal events: "
@@ -118,13 +514,12 @@ int main()
     while (is_listening)
     {
         // Make a vector for the sockets and add the listen socket, and all the client sockets.
-        std::vector<kevent_t> events(1 + clients.size());
+        std::vector<epoll_event> events(2 + clients.size());
 
-        // Wait for an event.
-        struct timespec timeout { 5, 0 };
-        int nevents = kevent(kfd, nullptr, 0, events.data(), events.size(), &timeout);
+        // Wait for events.
+        auto nfds = epoll_wait(efd, events.data(), events.size(), 5 * 1000);
 
-        if (nevents < 0)
+        if (nfds < 0)
         {
             // Exit on errors.
             std::cerr << "failed to poll: " << std::strerror(errno) << std::endl;
@@ -132,155 +527,16 @@ int main()
             continue;
         }
 
-        if (nevents == 0)
+        if (nfds == 0)
         {
             std::cerr << "Timeout" << std::endl;
             continue;
         }
 
         // Go through each of the sockets. Decrement the active fds for early termination.
-        for (auto i = 0; i < nevents; ++i)
+        for (auto i = 0; i < nfds; ++i)
         {
-            auto& event = events[i];
-            int fd = event.ident;
-
-            if (fd == listen_fd)
-            {
-                // Accept the new connection.
-                int client_fd = accept(listen_fd, (sockaddr *)nullptr, nullptr);
-                if (client_fd == -1)
-                {
-                    std::cerr
-                        << "failed to accept client socket: "
-                        << std::strerror(errno)
-                        << std::endl;
-                    is_listening = false;
-                    break;
-                }
-
-                // Make the connection non-blocking.
-                if (fcntl(client_fd, F_SETFL, O_NONBLOCK) == -1)
-                {
-                    std::cerr
-                        << "failed to make client socket non-blocking: "
-                        << std::strerror(errno)
-                        << std::endl;
-                    is_listening = false;
-                    break;
-                }
-
-                // Add events for reads or writes, but only enable reads.
-                kevent_t client_ev[2];
-                EV_SET(&client_ev[0], client_fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-                EV_SET(&client_ev[1], client_fd, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, nullptr);
-                if (kevent(kfd, client_ev, 2, nullptr, 0, nullptr) == -1)
-                {
-                    std::cerr
-                        << "failed to make client events: "
-                        << std::strerror(errno)
-                        << std::endl;
-                    is_listening = false;
-                    break;
-                }
-
-                clients[client_fd] = Client {};
-            }
-            else if (event.filter == EVFILT_SIGNAL)
-            {
-                if (event.ident == SIGINT)
-                {
-                    std::cout << "SIGINT\n";
-                }
-                else if (event.ident == SIGQUIT)
-                {
-                    std::cout << "SIGQUIT\n";
-                    is_listening = false;
-                }
-                continue;
-            }
-            else if (event.filter == EVFILT_READ || event.filter == EVFILT_WRITE)
-            {
-                auto& client = clients[fd];
-
-                if (event.filter == EVFILT_READ)
-                {
-                    // Read from the client socket.
-                    memset(client.buf, 0, sizeof(client.buf));
-                    auto nbytes_read = read(fd, client.buf, sizeof(client.buf));
-                    std::cout << "Received " << client.len << " bytes from " << fd << " of \"" << client.buf << "\"" << std::endl;
-
-                    if (nbytes_read <= 0)
-                    {
-                        std::cout << "Removing client " << fd << std::endl;
-                        clients.erase(fd);
-                        close(fd);
-                    }
-                    else
-                    {
-                        client.len = nbytes_read;
-                        client.offset = 0;
-
-                        // Disable reading, enable writing.
-                        kevent_t client_ev[2];
-                        EV_SET(&client_ev[0], fd, EVFILT_READ, EV_DISABLE, 0, 0, nullptr);
-                        EV_SET(&client_ev[1], fd, EVFILT_WRITE, EV_ENABLE, 0, 0, nullptr);
-                        if (kevent(kfd, client_ev, 2, nullptr, 0, nullptr) == -1)
-                        {
-                            std::cerr
-                                << "failed to switch client events to write: "
-                                << std::strerror(errno)
-                                << std::endl;
-                            is_listening = false;
-                            break;
-                        }
-                    }
-                }
-                else if (event.filter == EVFILT_WRITE)
-                {
-                    if (client.len == 0)
-                    {
-                        // Nothing to write.
-                        std::cerr << "Nothing to write\n";
-                        continue;
-                    }
-
-                    // Write the data back.
-                    std::cout << "Echoing back - " << (client.buf + client.offset) << std::endl;
-                    std::cout << "Writing " << client.len << std::endl;
-                    ssize_t nbytes_written = write(fd, client.buf + client.offset, client.len - client.offset);
-                    std::cout << "Wrote " << nbytes_written << " bytes" << std::endl;
-
-                    if (nbytes_written <= 0)
-                    {
-                        // Either error or close.
-                        std::cout << "Removing client " << fd << std::endl;
-                        clients.erase(fd);
-                    }
-                    else
-                    {
-                        client.offset += nbytes_written;
-                        if (client.offset == client.len)
-                        {
-                            client.len = 0;
-                            client.offset = 0;
-
-                            // Enable reading, disable writing.
-                            kevent_t client_ev[2];
-                            EV_SET(&client_ev[0], fd, EVFILT_READ, EV_ENABLE, 0, 0, nullptr);
-                            EV_SET(&client_ev[1], fd, EVFILT_WRITE, EV_DISABLE, 0, 0, nullptr);
-                            if (kevent(kfd, client_ev, 2, nullptr, 0, nullptr) == -1)
-                            {
-                                std::cerr
-                                    << "failed to switch client events to write: "
-                                    << std::strerror(errno)
-                                    << std::endl;
-                                is_listening = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
+            is_listening = handle_event(efd, listen_fd, signal_fd, events[i], clients);
         }
     }
 
