@@ -3,4 +3,3 @@ server
 server2
 echo-server
 chat-server
-*.dSYM
