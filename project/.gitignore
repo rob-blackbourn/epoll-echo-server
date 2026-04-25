@@ -1,4 +1,5 @@
 client
+server
 echo-server
 chat-server
 *.dSYM

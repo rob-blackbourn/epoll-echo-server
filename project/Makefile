@@ -32,7 +32,12 @@ CLIENT_HPP = \
 default: all
 
 .PHONEY: all
-all: chat-server echo-server client
+all: server chat-server echo-server client
+
+server: server.o
+	$(LINK.cc) $^ $(LOADLIBES) $(LDLIBS) -o $@
+
+server.o: server.cpp
 
 chat-server: chat-server.o
 	$(LINK.cc) $^ $(LOADLIBES) $(LDLIBS) -o $@
