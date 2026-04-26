@@ -37,9 +37,12 @@ namespace jetblack::io
         typedef std::function<void(EventLoop& event_loop)> timeout_callback_t;
         typedef std::vector<timeout_callback_t> timeout_callbacks_t;
 
+        struct EventState { int op; uint32_t events; };
+        typedef std::map<int, EventState> event_state_map_t;
     private:
         fd_callback_map_t fd_callbacks_;
         timeout_callbacks_t timeout_callbacks_;
+        std::map<int, uint32_t> event_state_;
 
     public:
         void add_fd_callback(int fd, EventType event_type, fd_callback_t callback)
@@ -69,6 +72,8 @@ namespace jetblack::io
 
             while (!fd_callbacks_.empty())
             {
+                prepare_events(efd);
+
                 // Make a vector for the file descriptors.
                 std::vector<epoll_event> events(fd_callbacks_.size());
 
@@ -98,10 +103,93 @@ namespace jetblack::io
                     for (auto& callback : callbacks)
                         callback(*this, event.data.fd);
                 }
+
+                prune_events(efd);
             }
         }
 
     private:
+        void prepare_events(int efd)
+        {
+            for (const auto& [fd, entry] : fd_callbacks_)
+            {
+                auto i_state = event_state_.find(fd);
+                if (i_state == event_state_.end())
+                {
+                    // This fd is not being monitored.
+                    epoll_event ev;
+                    ev.data.fd = fd;
+                    ev.events = EPOLLPRI | EPOLLERR | EPOLLHUP | EPOLLET;
+                    if (entry.find(EventType::READ) != entry.end())
+                    {
+                        ev.events |= EPOLLIN;
+                    }
+                    if (entry.find(EventType::WRITE) != entry.end())
+                    {
+                        ev.events |= EPOLLOUT;
+                    }
+                    event_state_[fd] = ev.events;
+                    if (epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev) == -1)
+                    {
+                        throw std::system_error(std::make_error_code(std::errc(errno)));
+                    }
+                }
+                else
+                {
+                    // This event is being handled.
+                    epoll_event ev;
+                    ev.data.fd = fd;
+                    ev.events = i_state->second;
+
+                    if (entry.find(EventType::READ) != entry.end())
+                    {
+                        ev.events |= EPOLLIN;
+                    }
+                    else
+                    {
+                        ev.events &= ~EPOLLIN;
+                    }
+
+                    if (entry.find(EventType::WRITE) != entry.end())
+                    {
+                        ev.events |= EPOLLOUT;
+                    }
+                    else
+                    {
+                        ev.events &= ~EPOLLOUT;
+                    }
+
+                    if (ev.events != i_state->second)
+                    {
+                        event_state_[fd] = ev.events;
+                        if (epoll_ctl(efd, EPOLL_CTL_MOD, fd, &ev) == -1)
+                        {
+                            throw std::system_error(std::make_error_code(std::errc(errno)));
+                        }
+                    }
+                }
+            }
+        }
+
+        void prune_events(int efd)
+        {
+            std::vector<int> deletable;
+            for (const auto& [fd, _] : event_state_)
+            {
+                if (fd_callbacks_.find(fd) == fd_callbacks_.end())
+                {
+                    deletable.push_back(fd);
+                }
+            }
+            for (auto fd : deletable)
+            {
+                if (epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr) == -1)
+                {
+                    throw std::system_error(std::make_error_code(std::errc(errno)));
+                }
+            }
+        }
+
         std::vector<fd_callback_t> take_fd_callbacks(const epoll_event& event)
         {
             std::vector<fd_callback_t> callables;

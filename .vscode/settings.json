@@ -1,7 +1,11 @@
 {
     "cSpell.words": [
+        "EPOLLERR",
+        "EPOLLET",
+        "EPOLLHUP",
         "EPOLLIN",
         "EPOLLOUT",
+        "EPOLLPRI",
         "JETBLACK",
         "tlsext"
     ]
