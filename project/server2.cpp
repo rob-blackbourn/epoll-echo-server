@@ -480,11 +480,16 @@ public:
   {
     listener_->bind(INADDR_ANY, port);
     listener_->listen(10);
+    event_loop_.add_fd_callback(
+      listener_->fd(),
+      EventLoop::EventType::READ,
+      [this](int fd) { this->handle_accept(fd); });
 
+    event_loop_.start(5000);
   }
 
 private:
-  void handle_accept(EventLoop& event_loop, int fd)
+  void handle_accept(int fd)
   {
     while (true)
     {
@@ -605,9 +610,9 @@ private:
 
 int main()
 {
-  EventLoop event_loop;
+  EchoServer echo_server;
 
-  event_loop.start(5000);
+  echo_server.start(8081);
 
   return 0;
 }
