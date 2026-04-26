@@ -37,8 +37,6 @@ namespace jetblack::io
         typedef std::function<void(EventLoop& event_loop)> timeout_callback_t;
         typedef std::vector<timeout_callback_t> timeout_callbacks_t;
 
-        struct EventState { int op; uint32_t events; };
-        typedef std::map<int, EventState> event_state_map_t;
     private:
         fd_callback_map_t fd_callbacks_;
         timeout_callbacks_t timeout_callbacks_;
@@ -94,7 +92,7 @@ namespace jetblack::io
                     continue;
                 }
 
-                // Go through each of the sockets. Decrement the active fds for early termination.
+                // Go through each of the events.
                 for (auto i = 0; i < nfds; ++i)
                 {
                     auto& event = events[i];

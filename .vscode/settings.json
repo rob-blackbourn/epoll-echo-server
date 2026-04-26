@@ -1,4 +1,10 @@
 {
+    "[c]": {
+        "editor.tabSize": 2
+    },
+    "[cpp]": {
+        "editor.tabSize": 2
+    },
     "cSpell.words": [
         "EPOLLERR",
         "EPOLLET",
