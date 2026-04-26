@@ -30,7 +30,7 @@ namespace jetblack::io
   {
   public:
     enum class EventType { READ, WRITE };
-    typedef std::function<void(EventLoop& event_loop, int fd)> fd_callback_t;
+    typedef std::function<void(int fd)> fd_callback_t;
     typedef std::map<int, std::map<EventType, std::vector<fd_callback_t>>> fd_callback_map_t;
 
     typedef std::function<void(EventLoop& event_loop)> timeout_callback_t;
@@ -100,7 +100,7 @@ namespace jetblack::io
           auto callbacks = take_fd_callbacks(events[i]);
 
           for (auto& callback : callbacks)
-            callback(*this, event.data.fd);
+            callback(event.data.fd);
         }
 
         prune_events(efd);
@@ -497,7 +497,7 @@ private:
       event_loop_.add_fd_callback(
         client->fd(),
         EventLoop::EventType::READ,
-        [this](EventLoop& event_loop, int fd)
+        [this](int fd)
         {
           this->handle_read(fd);
         });
@@ -552,7 +552,7 @@ private:
       event_loop_.add_fd_callback(
         fd,
         EventLoop::EventType::WRITE,
-        [this](EventLoop& event_loop, int fd)
+        [this](int fd)
         {
           this->handle_write(fd);
         });
@@ -594,7 +594,7 @@ private:
       event_loop_.add_fd_callback(
         fd,
         EventLoop::EventType::READ,
-        [this](EventLoop& event_loop, int fd)
+        [this](int fd)
         {
           this->handle_write(fd);
         });
