@@ -17,14 +17,15 @@ struct Buffer
 class EchoServer
 {
 private:
+  std::shared_ptr<EventLoop> event_loop_;
   std::unique_ptr<TcpListenerSocket> listener_;
-  EventLoop event_loop_;
   std::map<int, TcpListenerSocket::client_pointer> clients_;
   std::map<int, std::deque<std::unique_ptr<Buffer>>> messages_;
 
 public:
   EchoServer()
-    : listener_(std::make_unique<TcpListenerSocket>())
+    : event_loop_(std::make_shared<EventLoop>()),
+      listener_(std::make_unique<TcpListenerSocket>())
   {
   }
 
@@ -33,12 +34,12 @@ public:
     listener_->bind(INADDR_ANY, port);
     listener_->reuseaddr(true);
     listener_->listen(10);
-    event_loop_.add_fd_callback(
+    event_loop_->add_fd_callback(
       listener_->fd(),
       EventLoop::EventType::READ,
       [this](int fd) { this->handle_accept(fd); });
 
-    event_loop_.start(60 * 1000);
+    event_loop_->start(60 * 1000);
   }
 
 private:
@@ -52,7 +53,7 @@ private:
         break;
       }
 
-      event_loop_.add_fd_callback(
+      event_loop_->add_fd_callback(
         client->fd(),
         EventLoop::EventType::READ,
         [this](int fd)
@@ -107,7 +108,7 @@ private:
 
     if (messages_.find(fd) == messages_.end())
     {
-      event_loop_.add_fd_callback(
+      event_loop_->add_fd_callback(
         fd,
         EventLoop::EventType::WRITE,
         [this](int fd)
@@ -149,7 +150,7 @@ private:
 
     if (!buffers.empty())
     {
-      event_loop_.add_fd_callback(
+      event_loop_->add_fd_callback(
         fd,
         EventLoop::EventType::READ,
         [this](int fd)
