@@ -48,14 +48,14 @@ namespace jetblack::io
         fd_callbacks_[fd]= {};
       auto& fd_callbacks = fd_callbacks_[fd];
       if (fd_callbacks.find(event_type) == fd_callbacks.end())
-        fd_callbacks[event_type] = { callback };
+        fd_callbacks[event_type] = { std::move(callback) };
       else
-        fd_callbacks[event_type].push_back(callback);
+        fd_callbacks[event_type].push_back(std::move(callback));
     }
 
     void add_timeout_callback(timeout_callback_t callback)
     {
-      timeout_callbacks_.push_back(callback);
+      timeout_callbacks_.push_back(std::move(callback));
     }
 
     void start(int timeout)
@@ -86,7 +86,7 @@ namespace jetblack::io
         if (nfds == 0)
         {
           auto callbacks = timeout_callbacks_t{ std::move(timeout_callbacks_)};
-          for (auto& callback : callbacks)
+          for (auto&& callback : callbacks)
           {
             callback(*this);
           }
@@ -197,7 +197,7 @@ namespace jetblack::io
       {
         take_fd_event_callbacks(callables, event.data.fd, EventType::READ);
       }
-      if ((event.events & EPOLLIN) == EPOLLIN)
+      if ((event.events & EPOLLOUT) == EPOLLOUT)
       {
         take_fd_event_callbacks(callables, event.data.fd, EventType::WRITE);
       }
@@ -209,14 +209,13 @@ namespace jetblack::io
       return callables;
     }
 
-    void take_fd_event_callbacks(std::vector<fd_callback_t> dest, int fd, EventType event_type)
+    void take_fd_event_callbacks(std::vector<fd_callback_t>& dest, int fd, EventType event_type)
     {
-      auto&& callbacks = std::move(fd_callbacks_[fd].extract(event_type).mapped());
-      dest.insert(
-        dest.end(),
-        std::make_move_iterator(callbacks.begin()),
-        std::make_move_iterator(callbacks.end())
-      );
+      for (auto&& callback : fd_callbacks_[fd][event_type])
+      {
+        dest.push_back(std::move(callback));
+      }
+      fd_callbacks_[fd].erase(event_type);
     }
   };
   
@@ -479,13 +478,14 @@ public:
   void start(uint16_t port)
   {
     listener_->bind(INADDR_ANY, port);
+    listener_->reuseaddr(true);
     listener_->listen(10);
     event_loop_.add_fd_callback(
       listener_->fd(),
       EventLoop::EventType::READ,
       [this](int fd) { this->handle_accept(fd); });
 
-    event_loop_.start(5000);
+    event_loop_.start(60 * 1000);
   }
 
 private:
