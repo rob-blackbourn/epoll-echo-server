@@ -4,6 +4,7 @@
 
 #include "io/event_loop.hpp"
 #include "io/tcp_listener_socket.hpp"
+#include "io/tcp_socket_event_handler.hpp"
 
 using namespace jetblack::io;
 
